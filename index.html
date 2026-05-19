@@ -441,12 +441,28 @@ const SFX = {
   great()  { [523,659,784].forEach((f,i)=>setTimeout(()=>tone(f,'sine',.25),i*90)); },
   good()   { tone(440,'sine',.2,.3); },
   miss()   { tone(220,'triangle',.3,.3); },
-  // soft double-tap: "ready, go!" — plays when app is waiting for your backswing
-  ready()  { tone(330,'sine',.1,.3); setTimeout(()=>tone(440,'sine',.12,.35),160); },
-  // 3 ascending beeps: nu nu nu — backswing detected signal
+  // F1 start lights: 3 slow low beeps (bip...bip...bip...) then high GO! tone
+  // Called when shot is ready — countdown to swing
+  f1Ready(onGo) {
+    const BIP_FREQ = 440;   // low beep — like F1 red light sound
+    const GO_FREQ  = 880;   // high tone — lights out, GO!
+    const GAP      = 700;   // ms between beeps (slow, tense)
+    // Beep 1
+    setTimeout(()=>{ tone(BIP_FREQ,'square',.12,.6); }, 0);
+    // Beep 2
+    setTimeout(()=>{ tone(BIP_FREQ,'square',.12,.6); }, GAP);
+    // Beep 3
+    setTimeout(()=>{ tone(BIP_FREQ,'square',.12,.6); }, GAP*2);
+    // GO — higher pitch, longer
+    setTimeout(()=>{
+      tone(GO_FREQ,'sine',.35,.7);
+      tone(GO_FREQ*1.5,'sine',.2,.4);
+      if(onGo) onGo();
+    }, GAP*3);
+  },
+  // Backswing beeps kept as subtle cue (optional, can remove)
   backswingBeeps() {
-    const freqs = [440, 554, 659]; // A4, C#5, E5 — rising minor chord
-    freqs.forEach((f,i) => setTimeout(()=>tone(f,'sine',.12,.5), i*180));
+    tone(659,'sine',.1,.4);
   },
 };
 
@@ -873,12 +889,31 @@ function setWind() {
 function setSwingUI(phase) {
   const ring = $('swing-ring');
   ring.className = '';
-  $('swing-icon').textContent = phase==='backswing'?'⬆️' : phase==='top'?'⬇️' : phase==='impact'?'💥' : '🏌️';
-  $('swing-phase').textContent = phase==='backswing'?'Backswing!' : phase==='top'?'Swing Down!' : phase==='impact'?'Impact!' : 'Ready';
-  if (phase==='ready')     ring.classList.add('ready');
-  if (phase==='backswing') ring.classList.add('backswing');
-  if (phase==='top')       ring.classList.add('backswing');
-  if (phase==='impact')    ring.classList.add('impact');
+  if (phase==='countdown') {
+    $('swing-icon').textContent = '🔴';
+    $('swing-phase').textContent = 'Get Ready...';
+    ring.classList.add('ready');
+    // Animate the 3 lights visually in sync with sound (700ms gap)
+    setTimeout(()=>{ $('swing-icon').textContent='🔴🔴'; }, 700);
+    setTimeout(()=>{ $('swing-icon').textContent='🔴🔴🔴'; }, 1400);
+    setTimeout(()=>{ $('swing-icon').textContent='🟢'; $('swing-phase').textContent='GO! Raise & Swing!'; ring.classList.add('impact'); }, 2100);
+  } else if (phase==='ready') {
+    $('swing-icon').textContent = '🏌️';
+    $('swing-phase').textContent = 'Raise to Swing';
+    ring.classList.add('ready');
+  } else if (phase==='backswing') {
+    $('swing-icon').textContent = '⬆️';
+    $('swing-phase').textContent = 'Backswing!';
+    ring.classList.add('backswing');
+  } else if (phase==='top') {
+    $('swing-icon').textContent = '⬇️';
+    $('swing-phase').textContent = 'Swing Down!';
+    ring.classList.add('backswing');
+  } else if (phase==='impact') {
+    $('swing-icon').textContent = '💥';
+    $('swing-phase').textContent = 'Impact!';
+    ring.classList.add('impact');
+  }
 }
 
 function updateAimUI(gamma) {
@@ -919,8 +954,7 @@ function shotRating(dist, gamma) {
 
 function onSwingDetected({power, gamma}) {
   if (gameState!=='READY' && gameState!=='BACKSWING') return;
-  aInit();
-  SFX.swing(); setTimeout(()=>SFX.impact(),80);
+  aInit();  SFX.swing(); setTimeout(()=>SFX.impact(),80);
   setSwingUI('impact');
   gameState = 'FLIGHT';
   camMode = 'follow';
@@ -1000,14 +1034,17 @@ function nextShot() {
   Ball.reset();
   ballMesh.position.set(0,.2,0);
   camMode = 'tee';
-  gameState = 'READY';
-  setSwingUI('ready');
+  gameState = 'COUNTDOWN'; // block swing during countdown
+  setSwingUI('countdown');
   drawPowerArc(0);
   $('swing-panel').classList.add('show');
   $('aim-hud').classList.add('show');
   setWind();
-  // Short delay then play ready sound so it doesn't clash with result sounds
-  setTimeout(()=>SFX.ready(), 400);
+  // F1 countdown then unlock swing
+  SFX.f1Ready(()=>{
+    gameState = 'READY';
+    setSwingUI('ready');
+  });
 }
 
 function showResults() {
@@ -1063,7 +1100,7 @@ function loop(ts) {
   }
 
   // Live aim update — always shown in combined mode
-  if (gameState==='READY' || gameState==='BACKSWING') {
+  if (gameState==='READY' || gameState==='BACKSWING' || gameState==='COUNTDOWN') {
     updateAimUI(SwingDetector.gamma);
   }
 
@@ -1094,16 +1131,21 @@ window.startGame = function(mode) {
   $('aim-hud').classList.add('show');
 
   setWind();
-  setSwingUI('ready');
+  setSwingUI('countdown');
   drawPowerArc(0);
-  gameState = 'READY';
+  gameState = 'COUNTDOWN';
   camMode = 'tee';
 
   $('swing-panel').classList.add('show');
   SwingDetector.start(onSwingDetected, onBackswingDetected);
 
-  // Play ready sound after short delay (lets audio context settle)
-  setTimeout(()=>SFX.ready(), 600);
+  // F1 countdown — then unlock swing
+  setTimeout(()=>{
+    SFX.f1Ready(()=>{
+      gameState = 'READY';
+      setSwingUI('ready');
+    });
+  }, 600);
 
   if (raf) cancelAnimationFrame(raf);
   lastTime = performance.now();
