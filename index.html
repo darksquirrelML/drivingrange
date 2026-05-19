@@ -891,12 +891,11 @@ function setSwingUI(phase) {
   ring.className = '';
   if (phase==='countdown') {
     $('swing-icon').textContent = '🔴';
-    $('swing-phase').textContent = 'Get Ready...';
-    ring.classList.add('ready');
-    // Animate the 3 lights visually in sync with sound (700ms gap)
-    setTimeout(()=>{ $('swing-icon').textContent='🔴🔴'; }, 700);
-    setTimeout(()=>{ $('swing-icon').textContent='🔴🔴🔴'; }, 1400);
-    setTimeout(()=>{ $('swing-icon').textContent='🟢'; $('swing-phase').textContent='GO! Raise & Swing!'; ring.classList.add('impact'); }, 2100);
+    $('swing-phase').textContent = 'Hold steady...';
+    ring.classList.add('backswing');
+    setTimeout(()=>{ if($('swing-phase').textContent==='Hold steady...') { $('swing-icon').textContent='🔴🔴'; }}, 700);
+    setTimeout(()=>{ if($('swing-phase').textContent==='Hold steady...') { $('swing-icon').textContent='🔴🔴🔴'; }}, 1400);
+    setTimeout(()=>{ $('swing-icon').textContent='🟢'; $('swing-phase').textContent='SWING DOWN!'; ring.className=''; ring.classList.add('impact'); }, 2100);
   } else if (phase==='ready') {
     $('swing-icon').textContent = '🏌️';
     $('swing-phase').textContent = 'Raise to Swing';
@@ -953,8 +952,10 @@ function shotRating(dist, gamma) {
 }
 
 function onSwingDetected({power, gamma}) {
-  if (gameState!=='READY' && gameState!=='BACKSWING') return;
-  aInit();  SFX.swing(); setTimeout(()=>SFX.impact(),80);
+  // Only fire AFTER the F1 GO sound (BACKSWING state)
+  // COUNTDOWN blocks early swing
+  if (gameState!=='BACKSWING') return;
+  aInit(); SFX.swing(); setTimeout(()=>SFX.impact(),80);
   setSwingUI('impact');
   gameState = 'FLIGHT';
   camMode = 'follow';
@@ -973,21 +974,22 @@ function onSwingDetected({power, gamma}) {
 
 function onBackswingDetected() {
   if (gameState!=='READY') return;
-  gameState = 'BACKSWING';
-  setSwingUI('backswing');
-  // Play 3 ascending beeps — nu nu nu
+  gameState = 'COUNTDOWN'; // block swing during F1 countdown
   aInit();
-  SFX.backswingBeeps();
-  // Animate power arc building up slowly
+  setSwingUI('countdown'); // show F1 lights
+  // Power arc builds during countdown
   let t=0;
   const iv=setInterval(()=>{
-    t+=.025; drawPowerArc(Math.min(t,.95));
-    if(t>=.95||gameState!=='BACKSWING') clearInterval(iv);
+    t+=.014; drawPowerArc(Math.min(t,.95));
+    if(t>=.95||gameState!=='COUNTDOWN') clearInterval(iv);
   },30);
-  // After beeps finish (~600ms), show AT TOP state
-  setTimeout(()=>{
-    if(gameState==='BACKSWING') setSwingUI('top');
-  }, 600);
+  // F1 countdown — unlock swing on GO
+  SFX.f1Ready(()=>{
+    if(gameState==='COUNTDOWN') {
+      gameState = 'BACKSWING';
+      setSwingUI('top'); // ⬇️ Swing Down!
+    }
+  });
 }
 
 function showShotResult(distM, gamma) {
@@ -1034,17 +1036,12 @@ function nextShot() {
   Ball.reset();
   ballMesh.position.set(0,.2,0);
   camMode = 'tee';
-  gameState = 'COUNTDOWN'; // block swing during countdown
-  setSwingUI('countdown');
+  gameState = 'READY';
+  setSwingUI('ready');
   drawPowerArc(0);
   $('swing-panel').classList.add('show');
   $('aim-hud').classList.add('show');
   setWind();
-  // F1 countdown then unlock swing
-  SFX.f1Ready(()=>{
-    gameState = 'READY';
-    setSwingUI('ready');
-  });
 }
 
 function showResults() {
@@ -1131,21 +1128,13 @@ window.startGame = function(mode) {
   $('aim-hud').classList.add('show');
 
   setWind();
-  setSwingUI('countdown');
+  setSwingUI('ready');
   drawPowerArc(0);
-  gameState = 'COUNTDOWN';
+  gameState = 'READY';
   camMode = 'tee';
 
   $('swing-panel').classList.add('show');
   SwingDetector.start(onSwingDetected, onBackswingDetected);
-
-  // F1 countdown — then unlock swing
-  setTimeout(()=>{
-    SFX.f1Ready(()=>{
-      gameState = 'READY';
-      setSwingUI('ready');
-    });
-  }, 600);
 
   if (raf) cancelAnimationFrame(raf);
   lastTime = performance.now();
