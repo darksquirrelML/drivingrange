@@ -455,127 +455,104 @@ const SFX = {
 };
 
 // ═══════════════════════════════════════════════
-//  REAL SWING DETECTOR
-//  Detects: backswing (Y rises) → downswing (Y drops fast)
-//  Reads gamma at impact for direction
+//  SWING DETECTOR — simplified 2-phase
+//  Phase 1: Raise up fast → triggers F1 countdown
+//  Phase 2: Fixed 3s window → any fast motion = swing
 // ═══════════════════════════════════════════════
 const SwingDetector = (() => {
-  // Strategy: instead of tracking Y direction (varies by phone/orientation),
-  // we track TOTAL acceleration magnitude.
-  // Backswing = magnitude spike (raising phone fast)
-  // Pause at top = magnitude drops low (phone momentarily still)
-  // Downswing = magnitude spikes again (swinging down fast)
-  // This works on ALL Android phones regardless of axis direction.
-
-  const STATES = { IDLE:0, BACKSWING:1, AT_TOP:2 };
+  const STATES = { IDLE:0, RAISED:1 };
   let state = STATES.IDLE;
   let cooldown = false;
   let currentGamma = 0;
   let onSwingCb = null, onBackswingCb = null;
   let listening = false;
-  let backswingTimer = null;
-  let atTopTimer = null;
+  let swingWindow = null; // timer for swing window after raise
 
-  // Thresholds (magnitude based — works on all phones)
-  const MOVE_THRESH  = 5;   // m/s² total motion → movement detected
-  const STILL_THRESH = 3;   // m/s² → phone is "still" (at top of swing)
-  const SWING_THRESH = 8;   // m/s² motion after pause → downswing/impact
-  const COOL_MS = 2200;
-
-  // Gravity removal via exponential low-pass filter
+  // Gravity filter
   let gx=0, gy=9.8, gz=0;
-  const ALPHA = 0.85;
+  const ALPHA = 0.8;
 
-  // Magnitude buffer
+  // Raise threshold — high enough to ignore button taps and walking
+  // but triggered by deliberate raise of phone
+  const RAISE_THRESH = 9;  // needs a real deliberate raise motion
+  const SWING_THRESH = 9;  // fast downswing magnitude
+  const COOL_MS = 2500;
+
   let magBuf = [];
-  function smoothMag(v) {
-    magBuf.push(v); if(magBuf.length>4) magBuf.shift();
-    return magBuf.reduce((a,b)=>a+b,0)/magBuf.length;
-  }
+  function smooth(v){ magBuf.push(v); if(magBuf.length>3)magBuf.shift(); return magBuf.reduce((a,b)=>a+b,0)/magBuf.length; }
+
+  // Separate raise/swing buffers with peak tracking
+  let peakMag = 0;
+  let peakTimer = null;
 
   function onMotion(e) {
     if (!listening || cooldown) return;
-
-    // Use accelerationIncludingGravity — always available on Android
     const ag = e.accelerationIncludingGravity || e.acceleration;
     if (!ag || ag.x==null) return;
 
-    const rx = ag.x||0, ry = ag.y||0, rz = ag.z||0;
+    const rx=ag.x||0, ry=ag.y||0, rz=ag.z||0;
+    gx=ALPHA*gx+(1-ALPHA)*rx;
+    gy=ALPHA*gy+(1-ALPHA)*ry;
+    gz=ALPHA*gz+(1-ALPHA)*rz;
+    const lx=rx-gx, ly=ry-gy, lz=rz-gz;
+    const mag = Math.sqrt(lx*lx+ly*ly+lz*lz);
 
-    // Low-pass filter to isolate gravity component
-    gx = ALPHA*gx + (1-ALPHA)*rx;
-    gy = ALPHA*gy + (1-ALPHA)*ry;
-    gz = ALPHA*gz + (1-ALPHA)*rz;
-
-    // Linear acceleration = raw minus gravity
-    const lx = rx-gx, ly = ry-gy, lz = rz-gz;
-
-    // Total linear acceleration magnitude
-    const mag = Math.sqrt(lx*lx + ly*ly + lz*lz);
-    const mS = smoothMag(mag);
+    // Track peak over 200ms window
+    if (mag > peakMag) peakMag = mag;
+    clearTimeout(peakTimer);
+    peakTimer = setTimeout(()=>{ peakMag=0; }, 200);
 
     switch(state) {
       case STATES.IDLE:
-        // Any significant movement starts backswing detection
-        if (mS > MOVE_THRESH) {
-          state = STATES.BACKSWING;
+        // Raise: needs strong deliberate motion
+        if (peakMag > RAISE_THRESH) {
+          state = STATES.RAISED;
+          peakMag = 0;
+          magBuf = [];
           onBackswingCb && onBackswingCb();
-          clearTimeout(backswingTimer);
-          // If no swing within 4s, reset
-          backswingTimer = setTimeout(()=>{
-            state=STATES.IDLE; magBuf=[];
+          // Open swing window for 4 seconds
+          clearTimeout(swingWindow);
+          swingWindow = setTimeout(()=>{
+            if(state===STATES.RAISED){ state=STATES.IDLE; magBuf=[]; }
           }, 4000);
         }
         break;
 
-      case STATES.BACKSWING:
-        // Wait for phone to go still at top of backswing
-        if (mS < STILL_THRESH) {
-          state = STATES.AT_TOP;
-          // Give 2.5s window to swing down
-          clearTimeout(atTopTimer);
-          atTopTimer = setTimeout(()=>{
-            if(state===STATES.AT_TOP){ state=STATES.IDLE; magBuf=[]; }
-          }, 2500);
-        }
-        break;
-
-      case STATES.AT_TOP:
-        // Any fast motion now = downswing = FIRE
-        if (mS > SWING_THRESH) {
-          clearTimeout(backswingTimer);
-          clearTimeout(atTopTimer);
-          const power = Math.min(1, Math.max(0.1, (mS - SWING_THRESH) / 18));
+      case STATES.RAISED:
+        // Any strong motion in window = swing
+        if (peakMag > SWING_THRESH) {
+          clearTimeout(swingWindow);
+          const power = Math.min(1, Math.max(0.1,(peakMag-SWING_THRESH)/20));
+          state = STATES.IDLE; peakMag=0; magBuf=[];
           fire(power, currentGamma);
-          state = STATES.IDLE; magBuf = [];
         }
         break;
     }
   }
 
-  function onOrientation(e) { currentGamma = e.gamma || 0; }
+  function onOrientation(e){ currentGamma = e.gamma||0; }
 
-  function fire(power, gamma) {
-    cooldown = true;
+  function fire(power, gamma){
+    cooldown=true;
     if(onSwingCb) onSwingCb({power, gamma});
     setTimeout(()=>{ cooldown=false; }, COOL_MS);
   }
 
   return {
-    start(swingCb, backswingCb) {
+    start(swingCb, backswingCb){
       onSwingCb=swingCb; onBackswingCb=backswingCb;
-      listening=true; state=STATES.IDLE; magBuf=[];
-      gx=0; gy=9.8; gz=0;
+      listening=true; state=STATES.IDLE;
+      magBuf=[]; peakMag=0; gx=0; gy=9.8; gz=0;
       window.addEventListener('devicemotion', onMotion, {passive:true});
       window.addEventListener('deviceorientation', onOrientation, {passive:true});
     },
-    stop() {
+    stop(){
       listening=false;
       window.removeEventListener('devicemotion', onMotion);
       window.removeEventListener('deviceorientation', onOrientation);
     },
-    fakeSwing(power=0.7, gamma=0) { if(!cooldown) fire(power, gamma); },
-    get gamma() { return currentGamma; }
+    fakeSwing(power=0.7, gamma=0){ if(!cooldown) fire(power,gamma); },
+    get gamma(){ return currentGamma; }
   };
 })();
 
@@ -1121,9 +1098,12 @@ window.startGame = function(mode) {
   camMode = 'tee';
 
   $('swing-panel').classList.add('show');
-  SwingDetector.start(onSwingDetected, onBackswingDetected);
-  // Pee sound = "ready, raise your phone now!"
-  setTimeout(()=>SFX.pee(), 600);
+  // Delay start of swing detection by 1.5s so button tap doesn't trigger raise
+  setTimeout(()=>{
+    SwingDetector.start(onSwingDetected, onBackswingDetected);
+    // Pee sound = "ready, raise your phone now!"
+    setTimeout(()=>SFX.pee(), 200);
+  }, 1500);
 
   if (raf) cancelAnimationFrame(raf);
   lastTime = performance.now();
