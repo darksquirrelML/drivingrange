@@ -441,29 +441,17 @@ const SFX = {
   great()  { [523,659,784].forEach((f,i)=>setTimeout(()=>tone(f,'sine',.25),i*90)); },
   good()   { tone(440,'sine',.2,.3); },
   miss()   { tone(220,'triangle',.3,.3); },
-  // F1 start lights: 3 slow low beeps (bip...bip...bip...) then high GO! tone
-  // Called when shot is ready — countdown to swing
+  // Pee sound — short high beep meaning "I'm ready, raise your phone now"
+  pee()    { tone(880,'sine',.15,.5); },
+  // F1 start lights: bip bip bip GO — triggered after raise
   f1Ready(onGo) {
-    const BIP_FREQ = 440;   // low beep — like F1 red light sound
-    const GO_FREQ  = 880;   // high tone — lights out, GO!
-    const GAP      = 700;   // ms between beeps (slow, tense)
-    // Beep 1
-    setTimeout(()=>{ tone(BIP_FREQ,'square',.12,.6); }, 0);
-    // Beep 2
-    setTimeout(()=>{ tone(BIP_FREQ,'square',.12,.6); }, GAP);
-    // Beep 3
-    setTimeout(()=>{ tone(BIP_FREQ,'square',.12,.6); }, GAP*2);
-    // GO — higher pitch, longer
-    setTimeout(()=>{
-      tone(GO_FREQ,'sine',.35,.7);
-      tone(GO_FREQ*1.5,'sine',.2,.4);
-      if(onGo) onGo();
-    }, GAP*3);
+    const GAP = 700;
+    setTimeout(()=>tone(440,'square',.12,.6), 0);
+    setTimeout(()=>tone(440,'square',.12,.6), GAP);
+    setTimeout(()=>tone(440,'square',.12,.6), GAP*2);
+    setTimeout(()=>{ tone(880,'sine',.35,.7); tone(880*1.5,'sine',.2,.4); if(onGo)onGo(); }, GAP*3);
   },
-  // Backswing beeps kept as subtle cue (optional, can remove)
-  backswingBeeps() {
-    tone(659,'sine',.1,.4);
-  },
+  backswingBeeps() { tone(659,'sine',.1,.4); },
 };
 
 // ═══════════════════════════════════════════════
@@ -952,8 +940,7 @@ function shotRating(dist, gamma) {
 }
 
 function onSwingDetected({power, gamma}) {
-  // Only fire AFTER the F1 GO sound (BACKSWING state)
-  // COUNTDOWN blocks early swing
+  // Fire from BACKSWING state — anytime after raise detected
   if (gameState!=='BACKSWING') return;
   aInit(); SFX.swing(); setTimeout(()=>SFX.impact(),80);
   setSwingUI('impact');
@@ -965,7 +952,6 @@ function onSwingDetected({power, gamma}) {
 
   $('swing-panel').classList.remove('show');
 
-  // Store for result
   Ball._gamma = gamma;
   Ball._power = power;
 
@@ -974,22 +960,21 @@ function onSwingDetected({power, gamma}) {
 
 function onBackswingDetected() {
   if (gameState!=='READY') return;
-  gameState = 'COUNTDOWN'; // block swing during F1 countdown
+  // Set BACKSWING immediately — swing can fire at any time from now
+  gameState = 'BACKSWING';
   aInit();
-  setSwingUI('countdown'); // show F1 lights
-  // Power arc builds during countdown
+  setSwingUI('countdown'); // F1 lights visual
+  // F1 countdown sound — purely atmospheric, does NOT block swing
+  SFX.f1Ready(()=>{
+    // GO! — if player hasn't swung yet, prompt them
+    if (gameState==='BACKSWING') setSwingUI('top');
+  });
+  // Power arc builds during hold
   let t=0;
   const iv=setInterval(()=>{
     t+=.014; drawPowerArc(Math.min(t,.95));
-    if(t>=.95||gameState!=='COUNTDOWN') clearInterval(iv);
+    if(t>=.95||gameState!=='BACKSWING') clearInterval(iv);
   },30);
-  // F1 countdown — unlock swing on GO
-  SFX.f1Ready(()=>{
-    if(gameState==='COUNTDOWN') {
-      gameState = 'BACKSWING';
-      setSwingUI('top'); // ⬇️ Swing Down!
-    }
-  });
 }
 
 function showShotResult(distM, gamma) {
@@ -1042,6 +1027,8 @@ function nextShot() {
   $('swing-panel').classList.add('show');
   $('aim-hud').classList.add('show');
   setWind();
+  // Pee sound = "ready, raise your phone now!"
+  setTimeout(()=>SFX.pee(), 300);
 }
 
 function showResults() {
@@ -1097,7 +1084,7 @@ function loop(ts) {
   }
 
   // Live aim update — always shown in combined mode
-  if (gameState==='READY' || gameState==='BACKSWING' || gameState==='COUNTDOWN') {
+  if (gameState==='READY' || gameState==='BACKSWING') {
     updateAimUI(SwingDetector.gamma);
   }
 
@@ -1135,6 +1122,8 @@ window.startGame = function(mode) {
 
   $('swing-panel').classList.add('show');
   SwingDetector.start(onSwingDetected, onBackswingDetected);
+  // Pee sound = "ready, raise your phone now!"
+  setTimeout(()=>SFX.pee(), 600);
 
   if (raf) cancelAnimationFrame(raf);
   lastTime = performance.now();
