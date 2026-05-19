@@ -509,11 +509,11 @@ const SwingDetector = (() => {
           peakMag = 0;
           magBuf = [];
           onBackswingCb && onBackswingCb();
-          // Open swing window for 4 seconds
+          // Open swing window for 6 seconds (covers pee + F1 countdown + swing time)
           clearTimeout(swingWindow);
           swingWindow = setTimeout(()=>{
             if(state===STATES.RAISED){ state=STATES.IDLE; magBuf=[]; }
-          }, 4000);
+          }, 6000);
         }
         break;
 
@@ -916,7 +916,7 @@ function shotRating(dist, gamma) {
 }
 
 function onSwingDetected({power, gamma}) {
-  // Fire from BACKSWING state — anytime after raise detected
+  // Only fire after GO sound — BACKSWING state only
   if (gameState!=='BACKSWING') return;
   aInit(); SFX.swing(); setTimeout(()=>SFX.impact(),80);
   setSwingUI('impact');
@@ -936,21 +936,28 @@ function onSwingDetected({power, gamma}) {
 
 function onBackswingDetected() {
   if (gameState!=='READY') return;
-  // Set BACKSWING immediately — swing can fire at any time from now
-  gameState = 'BACKSWING';
+  // Lock swing during F1 countdown — use COUNTDOWN state
+  gameState = 'COUNTDOWN';
   aInit();
-  setSwingUI('countdown'); // F1 lights visual
-  // F1 countdown sound — purely atmospheric, does NOT block swing
-  SFX.f1Ready(()=>{
-    // GO! — if player hasn't swung yet, prompt them
-    if (gameState==='BACKSWING') setSwingUI('top');
-  });
-  // Power arc builds during hold
+  // Play pee sound first, then F1 after short gap
+  SFX.pee();
+  setSwingUI('countdown');
+  // Power arc builds during countdown
   let t=0;
   const iv=setInterval(()=>{
     t+=.014; drawPowerArc(Math.min(t,.95));
-    if(t>=.95||gameState!=='BACKSWING') clearInterval(iv);
+    if(t>=.95||gameState!=='COUNTDOWN') clearInterval(iv);
   },30);
+  // Start F1 after pee sound (300ms gap)
+  setTimeout(()=>{
+    SFX.f1Ready(()=>{
+      // GO! — now unlock swing
+      if(gameState==='COUNTDOWN'){
+        gameState='BACKSWING';
+        setSwingUI('top'); // ⬇️ Swing Down!
+      }
+    });
+  }, 300);
 }
 
 function showShotResult(distM, gamma) {
@@ -1060,7 +1067,7 @@ function loop(ts) {
   }
 
   // Live aim update — always shown in combined mode
-  if (gameState==='READY' || gameState==='BACKSWING') {
+  if (gameState==='READY' || gameState==='BACKSWING' || gameState==='COUNTDOWN') {
     updateAimUI(SwingDetector.gamma);
   }
 
