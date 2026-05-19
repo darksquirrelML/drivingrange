@@ -441,7 +441,9 @@ const SFX = {
   great()  { [523,659,784].forEach((f,i)=>setTimeout(()=>tone(f,'sine',.25),i*90)); },
   good()   { tone(440,'sine',.2,.3); },
   miss()   { tone(220,'triangle',.3,.3); },
-  // 3 ascending beeps: nu nu nu — backswing ready signal
+  // soft double-tap: "ready, go!" — plays when app is waiting for your backswing
+  ready()  { tone(330,'sine',.1,.3); setTimeout(()=>tone(440,'sine',.12,.35),160); },
+  // 3 ascending beeps: nu nu nu — backswing detected signal
   backswingBeeps() {
     const freqs = [440, 554, 659]; // A4, C#5, E5 — rising minor chord
     freqs.forEach((f,i) => setTimeout(()=>tone(f,'sine',.12,.5), i*180));
@@ -1002,8 +1004,10 @@ function nextShot() {
   setSwingUI('ready');
   drawPowerArc(0);
   $('swing-panel').classList.add('show');
-  $('aim-hud').classList.add('show'); // always show in combined mode
+  $('aim-hud').classList.add('show');
   setWind();
+  // Short delay then play ready sound so it doesn't clash with result sounds
+  setTimeout(()=>SFX.ready(), 400);
 }
 
 function showResults() {
@@ -1097,6 +1101,9 @@ window.startGame = function(mode) {
 
   $('swing-panel').classList.add('show');
   SwingDetector.start(onSwingDetected, onBackswingDetected);
+
+  // Play ready sound after short delay (lets audio context settle)
+  setTimeout(()=>SFX.ready(), 600);
 
   if (raf) cancelAnimationFrame(raf);
   lastTime = performance.now();
