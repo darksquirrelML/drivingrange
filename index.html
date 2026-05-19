@@ -252,8 +252,8 @@ html,body { width:100%; height:100%; overflow:hidden; background:var(--bg); colo
   <h2>How to Swing</h2>
   <div id="guide-phone-demo">📱</div>
   <div class="guide-step"><span class="guide-num">1</span><span class="guide-txt">Hold phone upright, face forward — like gripping a golf club</span></div>
-  <div class="guide-step"><span class="guide-num">2</span><span class="guide-txt">Raise phone up (backswing) — wait for the ring to turn gold</span></div>
-  <div class="guide-step"><span class="guide-num">3</span><span class="guide-txt">Swing down fast — speed = power, keep it straight!</span></div>
+  <div class="guide-step"><span class="guide-num">2</span><span class="guide-txt">Raise phone up — hear 3 beeps, ring turns gold ⬆️</span></div>
+  <div class="guide-step"><span class="guide-num">3</span><span class="guide-txt">Pause briefly at top, then swing DOWN fast ⬇️ — like hitting a ball!</span></div>
   <button class="bbtn" id="guide-ok-btn" style="margin-top:8px">Got it, Let's Go!</button>
 </div>
 
@@ -325,7 +325,7 @@ html,body { width:100%; height:100%; overflow:hidden; background:var(--bg); colo
     </div>
   </div>
   <div id="swing-instructions">
-    Raise phone up → swing down fast
+    ⬆️ Raise up → 3 beeps → ⬇️ Swing down fast
   </div>
   <button id="tap-btn">Tap to simulate swing</button>
 </div>
@@ -454,74 +454,96 @@ const SFX = {
 //  Reads gamma at impact for direction
 // ═══════════════════════════════════════════════
 const SwingDetector = (() => {
+  // Strategy: instead of tracking Y direction (varies by phone/orientation),
+  // we track TOTAL acceleration magnitude.
+  // Backswing = magnitude spike (raising phone fast)
+  // Pause at top = magnitude drops low (phone momentarily still)
+  // Downswing = magnitude spikes again (swinging down fast)
+  // This works on ALL Android phones regardless of axis direction.
+
   const STATES = { IDLE:0, BACKSWING:1, AT_TOP:2 };
   let state = STATES.IDLE;
   let cooldown = false;
   let currentGamma = 0;
-  let onSwingCb = null;
-  let onBackswingCb = null;
+  let onSwingCb = null, onBackswingCb = null;
   let listening = false;
   let backswingTimer = null;
-  let gravY = 9.8; // adaptive gravity baseline
+  let atTopTimer = null;
 
-  // Lowered thresholds — tuned for real indoor phone swing
-  const UP_THRESH   = 3;   // m/s² net upward → backswing detected
-  const DOWN_THRESH = 8;   // m/s² net downward → impact fired
-  const COOL_MS     = 2000;
+  // Thresholds (magnitude based — works on all phones)
+  const MOVE_THRESH  = 5;   // m/s² total motion → movement detected
+  const STILL_THRESH = 3;   // m/s² → phone is "still" (at top of swing)
+  const SWING_THRESH = 8;   // m/s² motion after pause → downswing/impact
+  const COOL_MS = 2200;
 
-  // Small rolling buffer to smooth jitter
-  let yBuf = [];
-  function smoothY(v) {
-    yBuf.push(v); if (yBuf.length > 4) yBuf.shift();
-    return yBuf.reduce((a,b)=>a+b,0) / yBuf.length;
+  // Gravity removal via exponential low-pass filter
+  let gx=0, gy=9.8, gz=0;
+  const ALPHA = 0.85;
+
+  // Magnitude buffer
+  let magBuf = [];
+  function smoothMag(v) {
+    magBuf.push(v); if(magBuf.length>4) magBuf.shift();
+    return magBuf.reduce((a,b)=>a+b,0)/magBuf.length;
   }
 
   function onMotion(e) {
     if (!listening || cooldown) return;
-    const a  = e.acceleration;
-    const ag = e.accelerationIncludingGravity;
-    let yNet = 0;
 
-    if (a && a.y !== null && a.y !== undefined) {
-      // Pure acceleration — no gravity component
-      yNet = a.y || 0;
-    } else if (ag) {
-      // Includes gravity — update adaptive baseline when nearly still
-      const mag = Math.sqrt((ag.x||0)**2+(ag.y||0)**2+(ag.z||0)**2);
-      if (mag > 8 && mag < 11) gravY = gravY * 0.95 + Math.abs(ag.y||9.8) * 0.05;
-      // Subtract gravity: when phone upright & still, ag.y ≈ +9.8
-      yNet = (ag.y || 0) - gravY;
-    } else return;
+    // Use accelerationIncludingGravity — always available on Android
+    const ag = e.accelerationIncludingGravity || e.acceleration;
+    if (!ag || ag.x==null) return;
 
-    const yS = smoothY(yNet);
+    const rx = ag.x||0, ry = ag.y||0, rz = ag.z||0;
 
-    switch (state) {
+    // Low-pass filter to isolate gravity component
+    gx = ALPHA*gx + (1-ALPHA)*rx;
+    gy = ALPHA*gy + (1-ALPHA)*ry;
+    gz = ALPHA*gz + (1-ALPHA)*rz;
+
+    // Linear acceleration = raw minus gravity
+    const lx = rx-gx, ly = ry-gy, lz = rz-gz;
+
+    // Total linear acceleration magnitude
+    const mag = Math.sqrt(lx*lx + ly*ly + lz*lz);
+    const mS = smoothMag(mag);
+
+    switch(state) {
       case STATES.IDLE:
-        if (yS > UP_THRESH) {
+        // Any significant movement starts backswing detection
+        if (mS > MOVE_THRESH) {
           state = STATES.BACKSWING;
           onBackswingCb && onBackswingCb();
           clearTimeout(backswingTimer);
-          backswingTimer = setTimeout(()=>{ state=STATES.IDLE; yBuf=[]; }, 3500);
+          // If no swing within 4s, reset
+          backswingTimer = setTimeout(()=>{
+            state=STATES.IDLE; magBuf=[];
+          }, 4000);
         }
         break;
 
       case STATES.BACKSWING:
-        // Phone decelerates at top of swing
-        if (yS < 0.5) state = STATES.AT_TOP;
+        // Wait for phone to go still at top of backswing
+        if (mS < STILL_THRESH) {
+          state = STATES.AT_TOP;
+          // Give 2.5s window to swing down
+          clearTimeout(atTopTimer);
+          atTopTimer = setTimeout(()=>{
+            if(state===STATES.AT_TOP){ state=STATES.IDLE; magBuf=[]; }
+          }, 2500);
+        }
         break;
 
-      case STATES.AT_TOP: {
-        const down = -yS; // positive = moving downward
-        if (down > DOWN_THRESH) {
+      case STATES.AT_TOP:
+        // Any fast motion now = downswing = FIRE
+        if (mS > SWING_THRESH) {
           clearTimeout(backswingTimer);
-          const power = Math.min(1, Math.max(0.1, (down - DOWN_THRESH) / 15));
+          clearTimeout(atTopTimer);
+          const power = Math.min(1, Math.max(0.1, (mS - SWING_THRESH) / 18));
           fire(power, currentGamma);
-          state = STATES.IDLE; yBuf = [];
+          state = STATES.IDLE; magBuf = [];
         }
-        // Went back up — retry backswing
-        if (yS > UP_THRESH) state = STATES.BACKSWING;
         break;
-      }
     }
   }
 
@@ -529,14 +551,15 @@ const SwingDetector = (() => {
 
   function fire(power, gamma) {
     cooldown = true;
-    if (onSwingCb) onSwingCb({ power, gamma });
+    if(onSwingCb) onSwingCb({power, gamma});
     setTimeout(()=>{ cooldown=false; }, COOL_MS);
   }
 
   return {
     start(swingCb, backswingCb) {
       onSwingCb=swingCb; onBackswingCb=backswingCb;
-      listening=true; state=STATES.IDLE; yBuf=[];
+      listening=true; state=STATES.IDLE; magBuf=[];
+      gx=0; gy=9.8; gz=0;
       window.addEventListener('devicemotion', onMotion, {passive:true});
       window.addEventListener('deviceorientation', onOrientation, {passive:true});
     },
@@ -848,8 +871,8 @@ function setWind() {
 function setSwingUI(phase) {
   const ring = $('swing-ring');
   ring.className = '';
-  $('swing-icon').textContent = phase==='backswing'?'⬆️' : phase==='top'?'⏸️' : phase==='impact'?'💥' : '🏌️';
-  $('swing-phase').textContent = phase==='backswing'?'Backswing' : phase==='top'?'At Top...' : phase==='impact'?'Impact!' : 'Ready';
+  $('swing-icon').textContent = phase==='backswing'?'⬆️' : phase==='top'?'⬇️' : phase==='impact'?'💥' : '🏌️';
+  $('swing-phase').textContent = phase==='backswing'?'Backswing!' : phase==='top'?'Swing Down!' : phase==='impact'?'Impact!' : 'Ready';
   if (phase==='ready')     ring.classList.add('ready');
   if (phase==='backswing') ring.classList.add('backswing');
   if (phase==='top')       ring.classList.add('backswing');
