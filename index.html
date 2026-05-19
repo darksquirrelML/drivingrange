@@ -456,101 +456,96 @@ const SFX = {
 const SwingDetector = (() => {
   const STATES = { IDLE:0, BACKSWING:1, AT_TOP:2 };
   let state = STATES.IDLE;
-  let maxUpY = 0;       // peak upward acceleration in backswing
   let cooldown = false;
-  let gammaAtImpact = 0;
   let currentGamma = 0;
   let onSwingCb = null;
   let onBackswingCb = null;
   let listening = false;
   let backswingTimer = null;
+  let gravY = 9.8; // adaptive gravity baseline
 
-  // Thresholds
-  const UP_THRESH   = 4;   // m/s² upward to start backswing
-  const DOWN_THRESH = 18;  // m/s² downward for impact (real swing only)
+  // Lowered thresholds — tuned for real indoor phone swing
+  const UP_THRESH   = 3;   // m/s² net upward → backswing detected
+  const DOWN_THRESH = 8;   // m/s² net downward → impact fired
   const COOL_MS     = 2000;
+
+  // Small rolling buffer to smooth jitter
+  let yBuf = [];
+  function smoothY(v) {
+    yBuf.push(v); if (yBuf.length > 4) yBuf.shift();
+    return yBuf.reduce((a,b)=>a+b,0) / yBuf.length;
+  }
 
   function onMotion(e) {
     if (!listening || cooldown) return;
-    const a = e.acceleration;
+    const a  = e.acceleration;
     const ag = e.accelerationIncludingGravity;
-    let yAcc = 0;
+    let yNet = 0;
 
-    if (a && a.y != null) {
-      yAcc = a.y || 0; // pure Y without gravity
+    if (a && a.y !== null && a.y !== undefined) {
+      // Pure acceleration — no gravity component
+      yNet = a.y || 0;
     } else if (ag) {
-      yAcc = (ag.y || 0); // includes gravity ~9.8
-    }
+      // Includes gravity — update adaptive baseline when nearly still
+      const mag = Math.sqrt((ag.x||0)**2+(ag.y||0)**2+(ag.z||0)**2);
+      if (mag > 8 && mag < 11) gravY = gravY * 0.95 + Math.abs(ag.y||9.8) * 0.05;
+      // Subtract gravity: when phone upright & still, ag.y ≈ +9.8
+      yNet = (ag.y || 0) - gravY;
+    } else return;
+
+    const yS = smoothY(yNet);
 
     switch (state) {
       case STATES.IDLE:
-        // Detect upward motion = start of backswing
-        if (yAcc > UP_THRESH) {
+        if (yS > UP_THRESH) {
           state = STATES.BACKSWING;
-          maxUpY = yAcc;
           onBackswingCb && onBackswingCb();
-          // If no downswing within 3s, reset
           clearTimeout(backswingTimer);
-          backswingTimer = setTimeout(() => { state = STATES.IDLE; }, 3000);
+          backswingTimer = setTimeout(()=>{ state=STATES.IDLE; yBuf=[]; }, 3500);
         }
         break;
 
       case STATES.BACKSWING:
-        if (yAcc > maxUpY) maxUpY = yAcc;
-        // Phone slows at top of backswing
-        if (yAcc < 1) {
-          state = STATES.AT_TOP;
-        }
+        // Phone decelerates at top of swing
+        if (yS < 0.5) state = STATES.AT_TOP;
         break;
 
-      case STATES.AT_TOP:
-        // Now waiting for fast downswing
-        // yAcc goes negative = downward
-        const downForce = -yAcc; // positive = downward
-        if (downForce > DOWN_THRESH) {
-          // IMPACT!
+      case STATES.AT_TOP: {
+        const down = -yS; // positive = moving downward
+        if (down > DOWN_THRESH) {
           clearTimeout(backswingTimer);
-          gammaAtImpact = currentGamma;
-          const power = Math.min(1, Math.max(0.05, (downForce - DOWN_THRESH) / 25));
-          fire(power, gammaAtImpact);
-          state = STATES.IDLE;
+          const power = Math.min(1, Math.max(0.1, (down - DOWN_THRESH) / 15));
+          fire(power, currentGamma);
+          state = STATES.IDLE; yBuf = [];
         }
-        // If y goes back up without downswing, back to backswing
-        if (yAcc > UP_THRESH) {
-          state = STATES.BACKSWING;
-          maxUpY = yAcc;
-        }
+        // Went back up — retry backswing
+        if (yS > UP_THRESH) state = STATES.BACKSWING;
         break;
+      }
     }
   }
 
-  function onOrientation(e) {
-    currentGamma = e.gamma || 0; // left/right tilt
-  }
+  function onOrientation(e) { currentGamma = e.gamma || 0; }
 
   function fire(power, gamma) {
     cooldown = true;
     if (onSwingCb) onSwingCb({ power, gamma });
-    setTimeout(() => { cooldown = false; }, COOL_MS);
+    setTimeout(()=>{ cooldown=false; }, COOL_MS);
   }
 
   return {
     start(swingCb, backswingCb) {
-      onSwingCb = swingCb;
-      onBackswingCb = backswingCb;
-      listening = true;
+      onSwingCb=swingCb; onBackswingCb=backswingCb;
+      listening=true; state=STATES.IDLE; yBuf=[];
       window.addEventListener('devicemotion', onMotion, {passive:true});
       window.addEventListener('deviceorientation', onOrientation, {passive:true});
     },
     stop() {
-      listening = false;
+      listening=false;
       window.removeEventListener('devicemotion', onMotion);
       window.removeEventListener('deviceorientation', onOrientation);
     },
-    fakeSwing(power=0.7, gamma=0) {
-      if (cooldown) return;
-      fire(power, gamma);
-    },
+    fakeSwing(power=0.7, gamma=0) { if(!cooldown) fire(power, gamma); },
     get gamma() { return currentGamma; }
   };
 })();
