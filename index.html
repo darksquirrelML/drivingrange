@@ -472,10 +472,9 @@ const SwingDetector = (() => {
   let gx=0, gy=9.8, gz=0;
   const ALPHA = 0.8;
 
-  // Raise threshold — high enough to ignore button taps and walking
-  // but triggered by deliberate raise of phone
-  const RAISE_THRESH = 9;  // needs a real deliberate raise motion
-  const SWING_THRESH = 9;  // fast downswing magnitude
+  // Raise threshold — button tap ~2-3 m/s², deliberate arm raise ~12-18 m/s²
+  const RAISE_THRESH = 12;  // real deliberate raise only
+  const SWING_THRESH = 12;  // real downswing only
   const COOL_MS = 2500;
 
   let magBuf = [];
@@ -1098,12 +1097,9 @@ window.startGame = function(mode) {
   camMode = 'tee';
 
   $('swing-panel').classList.add('show');
-  // Delay start of swing detection by 1.5s so button tap doesn't trigger raise
-  setTimeout(()=>{
-    SwingDetector.start(onSwingDetected, onBackswingDetected);
-    // Pee sound = "ready, raise your phone now!"
-    setTimeout(()=>SFX.pee(), 200);
-  }, 1500);
+  SwingDetector.start(onSwingDetected, onBackswingDetected);
+  // Pee sound = "ready, raise your phone now!"
+  setTimeout(()=>SFX.pee(), 300);
 
   if (raf) cancelAnimationFrame(raf);
   lastTime = performance.now();
