@@ -213,6 +213,17 @@ html,body { width:100%; height:100%; overflow:hidden; background:var(--bg); colo
 
 /* Misc */
 #mute-btn { pointer-events:all; }
+#cast-btn.on { border-color:rgba(0,230,118,0.7); box-shadow:0 0 10px rgba(0,230,118,0.3); }
+#cast-toast {
+  position:fixed; top:66px; right:12px;
+  background:rgba(8,18,32,0.96); border:1px solid rgba(0,230,118,0.25);
+  border-radius:12px; padding:12px 14px;
+  font-size:12px; color:var(--white); line-height:1.6;
+  max-width:210px; z-index:25;
+  opacity:0; pointer-events:none; transition:opacity .3s;
+}
+#cast-toast.on { opacity:1; pointer-events:all; }
+#cast-toast-x { display:block; margin-top:8px; color:var(--green); font-size:11px; cursor:pointer; text-align:right; }
 </style>
 </head>
 <body>
@@ -252,21 +263,16 @@ html,body { width:100%; height:100%; overflow:hidden; background:var(--bg); colo
   <div id="title-logo">DRIVING<br><span>RANGE</span></div>
   <div id="title-tagline">Swing your phone like a real club</div>
   <div id="mode-cards">
-    <div class="mode-card selected" id="card-power" data-mode="power">
-      <div class="mode-icon">💪</div>
-      <div class="mode-name">Power</div>
-      <div class="mode-desc">Swing as hard as you can. How far can you drive?</div>
-    </div>
-    <div class="mode-card" id="card-straight" data-mode="straight">
-      <div class="mode-icon">🎯</div>
-      <div class="mode-name">Straight</div>
-      <div class="mode-desc">Keep it on the fairway. Accuracy over power.</div>
+    <div class="mode-card selected" style="max-width:320px;pointer-events:none">
+      <div style="display:flex;gap:24px;justify-content:center;font-size:28px;margin-bottom:8px">💪🎯</div>
+      <div class="mode-name">Power + Straightness</div>
+      <div class="mode-desc" style="margin-top:6px">Every shot is scored on <strong style="color:#ffd740">distance</strong> AND <strong style="color:#00e676">accuracy</strong>.<br>Swing hard — but keep it straight!</div>
     </div>
   </div>
   <button class="bbtn" id="play-btn">Tee Off</button>
   <div id="title-hint">
     📱 Hold phone upright like a golf club<br>
-    ↑ Raise up for backswing → swing down fast
+    ↑ Raise up → hear 3 beeps → swing down fast
   </div>
 </div>
 
@@ -281,9 +287,17 @@ html,body { width:100%; height:100%; overflow:hidden; background:var(--bg); colo
     <div id="hud-right">
       <div class="hcard"><div class="hlabel">Score</div><div class="hval green" id="h-score">0</div></div>
       <button class="ibtn" id="mute-btn">🔊</button>
+      <button class="ibtn" id="cast-btn">📺</button>
     </div>
   </div>
-  <div id="mode-badge" id="mode-badge">POWER MODE</div>
+  <!-- cast toast -->
+  <div id="cast-toast">
+    <strong>📺 Cast to TV</strong><br>
+    Chrome ⋮ → <em>Cast tab</em> → pick your TV.<br>
+    Or open <strong>receiver.html</strong> on TV browser.
+    <span id="cast-toast-x">Got it ✕</span>
+  </div>
+  <div id="mode-badge" id="mode-badge">💪 POWER · 🎯 STRAIGHT</div>
   <div id="wind-hud">
     <div id="wind-arrow">→</div>
     <div id="wind-label">2 mph</div>
@@ -372,14 +386,8 @@ function tryLoad() {
 tryLoad();
 
 // Wire play button immediately — before Three.js loads
-let appReady = false, pendingPlay = false, selectedMode = 'power';
-document.querySelectorAll('.mode-card').forEach(card => {
-  card.addEventListener('click', () => {
-    document.querySelectorAll('.mode-card').forEach(c=>c.classList.remove('selected'));
-    card.classList.add('selected');
-    selectedMode = card.dataset.mode;
-  });
-});
+// Single combined mode — no card selection needed
+let appReady = false, pendingPlay = false, selectedMode = 'combined';
 document.getElementById('play-btn').addEventListener('click', () => {
   if (!appReady) { pendingPlay=true; document.getElementById('play-btn').textContent='Loading...'; return; }
   doPlay();
@@ -433,6 +441,11 @@ const SFX = {
   great()  { [523,659,784].forEach((f,i)=>setTimeout(()=>tone(f,'sine',.25),i*90)); },
   good()   { tone(440,'sine',.2,.3); },
   miss()   { tone(220,'triangle',.3,.3); },
+  // 3 ascending beeps: nu nu nu — backswing ready signal
+  backswingBeeps() {
+    const freqs = [440, 554, 659]; // A4, C#5, E5 — rising minor chord
+    freqs.forEach((f,i) => setTimeout(()=>tone(f,'sine',.12,.5), i*180));
+  },
 };
 
 // ═══════════════════════════════════════════════
@@ -849,8 +862,6 @@ function setSwingUI(phase) {
 }
 
 function updateAimUI(gamma) {
-  if (gameMode!=='straight') return;
-  // gamma: -45 to +45 comfortable range
   const pct = (gamma+45)/90;
   const clamped = Math.max(0, Math.min(1, pct));
   $('aim-dot').style.left = (clamped*100)+'%';
@@ -859,58 +870,47 @@ function updateAimUI(gamma) {
   $('aim-label').textContent = deg<3?'Straight': deg<15?'Slight '+side: deg<30?side:'Hard '+side;
 }
 
-function calcScore(distM, gamma, mode) {
-  // Find closest target
-  let pts = 0;
-  let targetHit = null;
+function calcScore(distM, gamma) {
+  // Distance points from target rings
+  let distPts = 0;
   for (let i=TARGETS.length-1; i>=0; i--) {
-    if (distM >= TARGETS[i].dist - 15) { pts=TARGETS[i].pts; targetHit=TARGETS[i]; break; }
+    if (distM >= TARGETS[i].dist - 15) { distPts=TARGETS[i].pts; break; }
   }
-  // Straightness bonus
-  const accPct = Math.max(0, 100 - Math.abs(gamma)*2.5);
-  if (mode==='straight') {
-    // Straightness mode: accuracy is the main score
-    pts = Math.round(accPct * .8);
-    if (Math.abs(gamma)<5) pts += 20; // bullseye bonus
-  } else {
-    // Power mode: distance pts + small accuracy bonus
-    pts += Math.round(accPct*.1);
-  }
-  return {pts, accPct: Math.round(accPct), targetHit};
+  // Accuracy: gamma 0° = 100%, ±45° = 0%
+  const accPct = Math.max(0, Math.round(100 - Math.abs(gamma)*2.2));
+  // Accuracy multiplier: straight shot doubles the distance points
+  const accMult = 0.5 + (accPct/100)*1.0; // 0.5x to 1.5x
+  const pts = Math.round(distPts * accMult);
+  return { pts, accPct, distPts };
 }
 
-function shotRating(dist, gamma, mode) {
-  if (mode==='power') {
-    if (dist>=220) return '🔥 Monster Drive!';
-    if (dist>=170) return '💪 Great Drive';
-    if (dist>=120) return '👍 Good Shot';
-    if (dist>=70)  return '😐 Ok Shot';
-    return '😅 Keep Trying';
-  } else {
-    const acc = Math.abs(gamma);
-    if (acc<5)  return '🎯 Bullseye!';
-    if (acc<12) return '✅ Very Straight';
-    if (acc<22) return '👌 Nearly There';
-    if (acc<35) return '↗️ Little Off';
-    return '🌀 Big Slice!';
-  }
+function shotRating(dist, gamma) {
+  const acc = Math.abs(gamma);
+  // Combined rating
+  if (dist>=200 && acc<10) return '🔥 Perfect Drive!';
+  if (dist>=170 && acc<20) return '💪 Monster Shot!';
+  if (dist>=140 && acc<25) return '🎯 Great Shot!';
+  if (dist>=100 && acc<30) return '👍 Good Shot';
+  if (acc<10)              return '✅ Arrow Straight!';
+  if (dist>=80)            return '😐 Ok Distance';
+  if (acc>40)              return '🌀 Big Slice!';
+  return '😅 Keep Trying';
 }
 
 function onSwingDetected({power, gamma}) {
-  if (gameState!=='READY') return;
+  if (gameState!=='READY' && gameState!=='BACKSWING') return;
   aInit();
   SFX.swing(); setTimeout(()=>SFX.impact(),80);
   setSwingUI('impact');
   gameState = 'FLIGHT';
   camMode = 'follow';
 
-  Ball.launch(power, gamma, gameMode);
+  Ball.launch(power, gamma, 'combined');
   drawPowerArc(power);
 
   $('swing-panel').classList.remove('show');
-  $('aim-hud').classList.remove('show');
 
-  // Store gamma for result
+  // Store for result
   Ball._gamma = gamma;
   Ball._power = power;
 
@@ -919,18 +919,26 @@ function onSwingDetected({power, gamma}) {
 
 function onBackswingDetected() {
   if (gameState!=='READY') return;
+  gameState = 'BACKSWING';
   setSwingUI('backswing');
-  // Animate power arc building up
+  // Play 3 ascending beeps — nu nu nu
+  aInit();
+  SFX.backswingBeeps();
+  // Animate power arc building up slowly
   let t=0;
   const iv=setInterval(()=>{
-    t+=.03; drawPowerArc(Math.min(t,.95));
-    if(t>=.95||gameState!=='READY') clearInterval(iv);
+    t+=.025; drawPowerArc(Math.min(t,.95));
+    if(t>=.95||gameState!=='BACKSWING') clearInterval(iv);
   },30);
+  // After beeps finish (~600ms), show AT TOP state
+  setTimeout(()=>{
+    if(gameState==='BACKSWING') setSwingUI('top');
+  }, 600);
 }
 
 function showShotResult(distM, gamma) {
-  const {pts, accPct} = calcScore(distM, gamma, gameMode);
-  const rating = shotRating(distM, gamma, gameMode);
+  const {pts, accPct} = calcScore(distM, gamma);
+  const rating = shotRating(distM, gamma);
   totalScore += pts;
   if (distM > bestDist) bestDist = distM;
 
@@ -939,12 +947,13 @@ function showShotResult(distM, gamma) {
   $('shot-dist-big').textContent = Math.round(distM);
   $('shot-dist-unit').textContent = 'METRES';
   $('shot-rating-txt').textContent = rating;
-  $('shot-acc-txt').textContent = gameMode==='straight' ? `Accuracy: ${accPct}%` : `+${pts} pts`;
+  // Always show both distance and accuracy
+  $('shot-acc-txt').textContent = `Accuracy: ${accPct}%  ·  +${pts} pts`;
   $('shot-result').classList.add('show');
 
-  // Play sound
-  if (accPct>85 || distM>200) SFX.great();
-  else if (accPct>60 || distM>130) SFX.good();
+  // Play sound based on combined performance
+  if (accPct>80 && distM>160) SFX.great();
+  else if (accPct>55 || distM>110) SFX.good();
   else SFX.miss();
 
   // Flash landing marker
@@ -975,7 +984,7 @@ function nextShot() {
   setSwingUI('ready');
   drawPowerArc(0);
   $('swing-panel').classList.add('show');
-  if (gameMode==='straight') $('aim-hud').classList.add('show');
+  $('aim-hud').classList.add('show'); // always show in combined mode
   setWind();
 }
 
@@ -1031,8 +1040,8 @@ function loop(ts) {
     }
   }
 
-  // Live aim update for straightness mode
-  if (gameState==='READY' && gameMode==='straight') {
+  // Live aim update — always shown in combined mode
+  if (gameState==='READY' || gameState==='BACKSWING') {
     updateAimUI(SwingDetector.gamma);
   }
 
@@ -1044,7 +1053,7 @@ function loop(ts) {
 // ─── START GAME ───────────────────────────────
 window.startGame = function(mode) {
   aInit();
-  gameMode = mode || 'power';
+  gameMode = 'combined';
   shotNum = 1;
   shots = [];
   totalScore = 0;
@@ -1057,10 +1066,10 @@ window.startGame = function(mode) {
   $('h-shot').textContent = 1;
   $('h-score').textContent = 0;
   $('h-best').textContent = '—';
-  $('mode-badge').textContent = mode==='power' ? '💪 POWER MODE' : '🎯 STRAIGHTNESS MODE';
+  $('mode-badge').textContent = '💪 Power · 🎯 Straight';
 
-  // Show/hide aim HUD
-  $('aim-hud').classList.toggle('show', mode==='straight');
+  // Always show aim indicator
+  $('aim-hud').classList.add('show');
 
   setWind();
   setSwingUI('ready');
@@ -1080,6 +1089,33 @@ window.startGame = function(mode) {
 $('mute-btn').addEventListener('click',()=>{
   muted=!muted; if(master)master.gain.value=muted?0:.7;
   $('mute-btn').textContent=muted?'🔇':'🔊';
+});
+
+$('cast-btn').addEventListener('click',()=>{
+  const btn=$('cast-btn'), toast=$('cast-toast');
+  const on = btn.classList.toggle('on');
+  toast.classList.toggle('on', on);
+  if (on && window.PresentationRequest) {
+    const url = new URL('receiver.html', location.href).href;
+    new PresentationRequest([url]).start()
+      .then(conn => {
+        btn.textContent = '📡';
+        btn.title = 'Casting — tap to stop';
+        conn.addEventListener('terminate', () => {
+          btn.textContent = '📺';
+          btn.classList.remove('on');
+          toast.classList.remove('on');
+        });
+      })
+      .catch(() => {}); // user cancelled or not supported — toast stays visible
+  }
+  if (!on) btn.textContent = '📺';
+});
+
+$('cast-toast-x').addEventListener('click',()=>{
+  $('cast-toast').classList.remove('on');
+  $('cast-btn').classList.remove('on');
+  $('cast-btn').textContent='📺';
 });
 
 $('tap-btn').addEventListener('click',()=>{

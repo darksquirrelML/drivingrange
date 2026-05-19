@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GolfSwing3D — TV Display</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0d1f0d;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: sans-serif;
+    color: #7dff7d;
+  }
+
+  #status {
+    text-align: center;
+    opacity: 0.6;
+  }
+  #status h1 {
+    font-size: 48px;
+    letter-spacing: 6px;
+    margin-bottom: 12px;
+  }
+  #status p {
+    font-size: 16px;
+    letter-spacing: 2px;
+    opacity: 0.7;
+  }
+
+  /* The video element that shows the phone's canvas stream */
+  #cast-video {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: #0d1f0d;
+    display: none;
+  }
+
+  /* Watermark */
+  #watermark {
+    position: fixed;
+    bottom: 16px;
+    right: 20px;
+    font-size: 13px;
+    letter-spacing: 2px;
+    opacity: 0.25;
+    color: #7dff7d;
+  }
+
+  /* Waiting animation */
+  @keyframes pulse {
+    0%, 100% { opacity: 0.3; }
+    50%       { opacity: 0.9; }
+  }
+  #dot { display: inline-block; animation: pulse 1.4s ease-in-out infinite; font-size: 32px; }
+</style>
+</head>
+<body>
+
+<video id="cast-video" autoplay playsinline muted></video>
+
+<div id="status">
+  <h1>⛳ GOLFSWING3D</h1>
+  <p>Waiting for phone to connect <span id="dot">●</span></p>
+  <p style="margin-top:16px;font-size:13px;opacity:0.45">
+    Open the game on your phone → tap 📺 → Cast tab in Chrome
+  </p>
+</div>
+
+<div id="watermark">GOLFSWING3D · TV</div>
+
+<script>
+  // Method 1: Presentation API receiver
+  // If opened via PresentationRequest, the connection arrives here
+  if (navigator.presentation && navigator.presentation.receiver) {
+    navigator.presentation.receiver.connectionList.then(list => {
+      list.connections.forEach(conn => handleConn(conn));
+      list.addEventListener('connectionavailable', e => handleConn(e.connection));
+    });
+  }
+
+  function handleConn(conn) {
+    document.getElementById('status').style.display = 'none';
+    conn.addEventListener('message', e => {
+      // If the phone sends a MediaStream track, display it
+      // (future enhancement — currently uses Chrome tab cast)
+    });
+    conn.addEventListener('terminate', () => {
+      document.getElementById('status').style.display = '';
+    });
+  }
+
+  // Method 2: BroadcastChannel (same-origin tab mirror)
+  // Works when both phone and TV are on the same network/browser session
+  try {
+    const bc = new BroadcastChannel('golfswing3d-cast');
+    bc.addEventListener('message', e => {
+      if (e.data && e.data.type === 'stream' && e.data.stream) {
+        const video = document.getElementById('cast-video');
+        video.srcObject = e.data.stream;
+        video.style.display = 'block';
+        document.getElementById('status').style.display = 'none';
+      }
+    });
+  } catch(_) {}
+
+  // Method 3: URL param stream ID (WebRTC — advanced, for future)
+  // If ?session=xxx in URL, connect to that peer session
+
+  // Animate the golf ball on waiting screen
+  const canvas = document.createElement('canvas');
+  canvas.style.cssText = 'position:fixed;inset:0;z-index:-1;opacity:0.07';
+  document.body.appendChild(canvas);
+  const ctx2 = canvas.getContext('2d');
+
+  function resizeCanvas() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+  }
+  resizeCanvas();
+  window.addEventListener('resize', resizeCanvas);
+
+  // Draw floating golf balls in background
+  const balls = Array.from({length: 12}, () => ({
+    x: Math.random() * window.innerWidth,
+    y: Math.random() * window.innerHeight,
+    vx: (Math.random() - 0.5) * 0.8,
+    vy: (Math.random() - 0.5) * 0.8,
+    r: 8 + Math.random() * 18
+  }));
+
+  function animBg() {
+    ctx2.clearRect(0, 0, canvas.width, canvas.height);
+    ctx2.fillStyle = '#7dff7d';
+    balls.forEach(b => {
+      b.x += b.vx; b.y += b.vy;
+      if (b.x < 0 || b.x > canvas.width)  b.vx *= -1;
+      if (b.y < 0 || b.y > canvas.height) b.vy *= -1;
+      ctx2.beginPath();
+      ctx2.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+      ctx2.fill();
+    });
+    requestAnimationFrame(animBg);
+  }
+  animBg();
+</script>
+</body>
+</html>
